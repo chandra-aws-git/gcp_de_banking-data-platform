@@ -1,31 +1,23 @@
+from datetime import timedelta
+
 from airflow import DAG
-from airflow.utils.dates import days_ago
 from airflow.operators.empty import EmptyOperator
 from airflow.operators.trigger_dagrun import TriggerDagRunOperator
+from pendulum import datetime
 
-# =====================================================
-# CONFIG
-# =====================================================
-DEFAULT_ARGS = {
-    "owner": "data-engineering",
-    "retries": 0,  # fail fast,
-    "email_on_failure": True
-}
+from banking_config import DEFAULT_ARGS
 
-# =====================================================
-# DAG
-# =====================================================
+
 with DAG(
     dag_id="banking_master_dag",
     description="Master DAG orchestrating Banking Data Platform",
-    start_date=days_ago(1),
-    schedule_interval="@once",
+    start_date=datetime(2026, 1, 1, tz="UTC"),
+    schedule="@once",
     catchup=False,
     max_active_runs=1,
     default_args=DEFAULT_ARGS,
     tags=["banking", "master", "orchestration"],
 ) as dag:
-
     start = EmptyOperator(task_id="start")
 
     trigger_ingestion = TriggerDagRunOperator(
@@ -33,6 +25,7 @@ with DAG(
         trigger_dag_id="banking_ingestion_dag",
         wait_for_completion=True,
         poke_interval=60,
+        execution_timeout=timedelta(minutes=30),
         allowed_states=["success"],
         failed_states=["failed"],
     )
@@ -42,6 +35,7 @@ with DAG(
         trigger_dag_id="banking_bronze_dag",
         wait_for_completion=True,
         poke_interval=60,
+        execution_timeout=timedelta(hours=2),
         allowed_states=["success"],
         failed_states=["failed"],
     )
@@ -51,6 +45,7 @@ with DAG(
         trigger_dag_id="banking_silver_dag",
         wait_for_completion=True,
         poke_interval=60,
+        execution_timeout=timedelta(hours=1),
         allowed_states=["success"],
         failed_states=["failed"],
     )
@@ -60,6 +55,7 @@ with DAG(
         trigger_dag_id="banking_gold_dag",
         wait_for_completion=True,
         poke_interval=60,
+        execution_timeout=timedelta(hours=1),
         allowed_states=["success"],
         failed_states=["failed"],
     )
