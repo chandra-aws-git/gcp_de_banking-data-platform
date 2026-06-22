@@ -1,6 +1,6 @@
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 import apache_beam as beam
 from apache_beam.options.pipeline_options import PipelineOptions
@@ -11,50 +11,58 @@ from apache_beam.io.gcp.bigquery import WriteToBigQuery
 # =====================================================
 # CONFIGURATION
 # =====================================================
-PROJECT_ID = "dev-banking-2026"
-REGION = "us-east1"
 
-# Pub/Sub subscription for streaming transactions
+PROJECT_ID = "dev-banking-2026-499415"
+REGION = "us-central1"
+
 INPUT_SUBSCRIPTION = (
-    "projects/dev-banking-2026/subscriptions/"
+    "projects/dev-banking-2026-499415/subscriptions/"
     "banking-transactions-sub"
 )
 
-# BigQuery Bronze table (append-only)
-BQ_TABLE = "banking_bronze.bronze_streaming_transactions"
+BQ_TABLE = (
+    "dev-banking-2026-499415:"
+    "banking_bronze.bronze_streaming_transactions"
+)
 
-# Dead-letter topic for invalid / corrupt messages
+BQ_TEMP = "gs://banking-temp-dev-bkt/tempp/"
+
 DEADLETTER_TOPIC = (
-    "projects/dev-banking-2026/topics/"
+    "projects/dev-banking-2026-499415/topics/"
     "banking-transactions-deadletter"
 )
 
+TEMP_LOCATION = "gs://banking-temp-dev-bkt/tempp/"
+STAGING_LOCATION = "gs://banking-temp-dev-bkt/stagingp/"
+
+
 # =====================================================
-# PIPELINE OPTIONS (STREAMING MODE)
+# PIPELINE OPTIONS
 # =====================================================
+
 pipeline_options = PipelineOptions(
-    streaming=True,               # Required for Pub/Sub streaming
-    project=PROJECT_ID,
-    region=REGION,
-    save_main_session=True        # Needed for DoFn class serialization
+    # runner="DataflowRunner",
+    # project=PROJECT_ID,
+    # region=REGION,
+    # temp_location=TEMP_LOCATION,
+    # staging_location=STAGING_LOCATION,
+    streaming=True,
+    # save_main_session=True
 )
 
+
 # =====================================================
-# PARSE & VALIDATE EVENTS
+# PARSE & VALIDATE
 # =====================================================
+
 class ParseAndValidateEvent(beam.DoFn):
-    """
-    Parses JSON message from Pub/Sub and validates required fields.
-    Invalid messages are routed to a dead-letter topic.
-    """
 
     def process(self, message):
-        try:
-            # Decode Pub/Sub message (bytes → dict)
-            event = message.decode("utf-8")
-            event = json.loads(event)
 
-            # Mandatory banking transaction fields
+        try:
+
+            event = json.loads(message.decode("utf-8"))
+
             required_fields = [
                 "event_id",
                 "transaction_id",
@@ -68,40 +76,37 @@ class ParseAndValidateEvent(beam.DoFn):
                 "event_ts"
             ]
 
-            # Validate required fields
             for field in required_fields:
                 if field not in event:
                     raise ValueError(f"Missing field: {field}")
 
-            # Convert event timestamp to datetime (event time)
-            event["event_ts"] = datetime.fromisoformat(event["event_ts"].replace("Z", "+00:00"))
+            parsed_ts = datetime.fromisoformat(event["event_ts"].replace("Z", "+00:00"))
 
-            # Add ingestion timestamp (processing time)
-            event["ingest_ts"] = datetime.utcnow()
+            event["event_ts"] = parsed_ts.isoformat()
+            event["_event_time"] = parsed_ts.timestamp()
+            event["ingest_ts"] = (datetime.now(timezone.utc).isoformat())
 
-            # Emit valid event
             yield event
 
         except Exception as e:
-            # Log error and send raw message to dead-letter stream
-            logging.error(f"Invalid message: {e}- {message}")
-            yield beam.pvalue.TaggedOutput("deadletter",message.decode("utf-8"))
+            logging.error(f"Invalid message: {str(e)} | "f"Message: {message}")
+            yield beam.pvalue.TaggedOutput("deadletter", message.decode("utf-8"))
+
 
 # =====================================================
-# FORMAT RECORD FOR BIGQUERY
+# FORMAT FOR BIGQUERY
 # =====================================================
+
 class FormatForBigQuery(beam.DoFn):
-    """
-    Converts validated event into BigQuery-compatible dictionary.
-    """
 
     def process(self, event):
+
         yield {
             "event_id": event["event_id"],
             "transaction_id": event["transaction_id"],
             "account_id": event["account_id"],
             "customer_id": event["customer_id"],
-            "amount": event["amount"],
+            "amount": float(event["amount"]),
             "currency": event["currency"],
             "transaction_type": event["transaction_type"],
             "channel": event["channel"],
@@ -110,69 +115,100 @@ class FormatForBigQuery(beam.DoFn):
             "ingest_ts": event["ingest_ts"]
         }
 
+
 # =====================================================
-# PIPELINE DEFINITION
+# DEDUP FUNCTION
 # =====================================================
+
+class KeepFirstRecord(beam.CombineFn):
+
+    def create_accumulator(self):
+        return None
+
+    def add_input(self, accumulator, element):
+        return accumulator if accumulator is not None else element
+
+    def merge_accumulators(self, accumulators):
+        for acc in accumulators:
+            if acc is not None:
+                return acc
+        return None
+
+    def extract_output(self, accumulator):
+        return accumulator
+
+
+# =====================================================
+# PIPELINE
+# =====================================================
+
 def run():
-    """
-    Streaming pipeline:
-    Pub/Sub → Validation → Windowing → Deduplication → BigQuery
-    """
 
     with beam.Pipeline(options=pipeline_options) as p:
 
-        # -------------------------------------------------
-        # READ STREAMING DATA FROM PUB/SUB
-        # -------------------------------------------------
+        # -----------------------------------------
+        # READ PUBSUB
+        # -----------------------------------------
+
         events = (
             p
-            | "ReadFromPubSub" >> ReadFromPubSub(subscription=INPUT_SUBSCRIPTION)
-            | "ParseAndValidate" >> beam.ParDo(ParseAndValidateEvent()).with_outputs("deadletter", main="valid")
+            | "ReadFromPubSub">> ReadFromPubSub(subscription=INPUT_SUBSCRIPTION)
+            | "ParseAndValidate">> beam.ParDo(ParseAndValidateEvent()).with_outputs("deadletter",main="valid")
         )
 
         valid_events = events.valid
         deadletter_events = events.deadletter
 
-        # -------------------------------------------------
-        # DEAD-LETTER HANDLING
-        # -------------------------------------------------
-        # Invalid messages are published for replay/debugging
+        # -----------------------------------------
+        # DEAD LETTER
+        # -----------------------------------------
+
+        (deadletter_events| "LogDeadLetter">> beam.Map(lambda x: logging.error(f"Deadletter: {x}")))
+
+        # Uncomment if DLQ topic exists
+
         # deadletter_events | "WriteDeadLetter" >> beam.io.WriteToPubSub(DEADLETTER_TOPIC)
 
-        # -------------------------------------------------
-        # EVENT TIME ASSIGNMENT & WINDOWING
-        # -------------------------------------------------
+        # -----------------------------------------
+        # EVENT TIME + WINDOWING
+        # -----------------------------------------
+
         windowed_events = (
             valid_events
-            # Assign event time for watermarking
-            | "AssignEventTime" >> beam.Map(lambda e: beam.window.TimestampedValue(e, e["event_ts"].timestamp()))
-            
-            # Fixed 1-minute windows with late data support
-            | "WindowIntoFixedWindows" >> beam.WindowInto(FixedWindows(60),allowed_lateness=300)   # Accept late events up to 5 minutes
+            | "AssignEventTime" >> beam.Map(lambda e: beam.window.TimestampedValue(e, e["_event_time"]))
+            | "WindowInto" >> beam.WindowInto(FixedWindows(60), allowed_lateness=300)
         )
 
-        # -------------------------------------------------
-        # DEDUPLICATION (EVENT_ID)
-        # -------------------------------------------------
-        # Safe deduplication for streaming pipelines
-        deduped_events = (windowed_events | "DeduplicateByEventId" >> beam.Distinct())
+        # -----------------------------------------
+        # DEDUPLICATE
+        # -----------------------------------------
+        deduped_events = (
+            windowed_events
+            | "KeyByEventId" >> beam.Map(lambda e: (e["event_id"], e))
+            | "DeduplicateByEventId" >> beam.CombinePerKey(KeepFirstRecord())
+            | "DropKey" >> beam.Values()
+        )
 
-        # -------------------------------------------------
-        # WRITE TO BIGQUERY (BRONZE LAYER)
-        # -------------------------------------------------
+        # -----------------------------------------
+        # WRITE TO BIGQUERY
+        # -----------------------------------------
+
         (
             deduped_events
             | "FormatForBQ" >> beam.ParDo(FormatForBigQuery())
+            # | beam.Map(print)
             | "WriteToBigQuery" >> WriteToBigQuery(
                 table=BQ_TABLE,
                 write_disposition=beam.io.BigQueryDisposition.WRITE_APPEND,
                 create_disposition=beam.io.BigQueryDisposition.CREATE_NEVER,
-                custom_gcs_temp_location="gs://gcs-temp-bkt-154546/temp/"
+                custom_gcs_temp_location=BQ_TEMP
             )
         )
+
 
 # =====================================================
 # ENTRY POINT
 # =====================================================
+
 if __name__ == "__main__":
     run()

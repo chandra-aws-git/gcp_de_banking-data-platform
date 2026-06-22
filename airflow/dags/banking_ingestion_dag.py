@@ -14,17 +14,16 @@ from pathlib import Path
 # =====================================================
 # CONFIG
 # =====================================================
-PROJECT_ID = "dev-gcp-100"
+PROJECT_ID = "dev-banking-2026-499415"
 REGION = "us-central1"
+TEMP_LOCATION = "gs://banking-temp-dev-bkt/temp/"
+STAGING_LOCATION = "gs://banking-temp-dev-bkt/staging/"
 
 composer_bucket = os.environ.get("GCS_BUCKET")
 logging.info("COMPOSER_BUCKET = %s", composer_bucket)
 
 GCS_PYTHON_SCRIPT = f"gs://{composer_bucket}/data/dataflow/cloudsql_cdc_pipeline.py"
 logging.info("GCS_PYTHON_SCRIPT = %s", GCS_PYTHON_SCRIPT)
-
-TEMP_LOCATION = "gs://banking-temp-dev/temp/"
-STAGING_LOCATION = "gs://banking-temp-dev/staging/"
 
 DEFAULT_ARGS = {
     "owner": "data-engineering"
@@ -37,7 +36,7 @@ with DAG(
     dag_id="banking_ingestion_dag",
     description="Cloud SQL → GCS CDC using Apache Beam on Dataflow",
     start_date=days_ago(1),
-    schedule_interval="0 10 * * *",
+    schedule_interval=None,
     catchup=False,
     max_active_runs=1,
     default_args=DEFAULT_ARGS,
@@ -58,6 +57,7 @@ with DAG(
             "apache-beam[gcp]",
             "cloud-sql-python-connector[pymysql]",
             "sqlalchemy",
+            "SQLAlchemy",
             "pymysql",
             "pyarrow"
         ],

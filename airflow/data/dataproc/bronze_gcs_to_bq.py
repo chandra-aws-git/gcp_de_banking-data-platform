@@ -44,14 +44,14 @@ import traceback
 # =====================================================
 
 # GCP Project
-PROJECT_ID = "dev-gcp-100"
+PROJECT_ID = "dev-banking-2026-499415"
 
 # BigQuery datasets
 BRONZE_DATASET = "banking_bronze"
 METADATA_DATASET = "banking_metadata"
 
 # Temporary GCS bucket for BigQuery connector
-BQ_TEMP_BUCKET = "banking-temp-dev"
+BQ_TEMP_BUCKET = "banking-temp-dev-bkt"
 
 # Environment details
 ENV = "DEV"

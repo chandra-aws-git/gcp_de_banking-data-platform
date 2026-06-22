@@ -1,8 +1,8 @@
 """
-Note : pip install cloud-sql-python-connector sqlalchemy pymysql
+Note : pip install cloud-sql-python-connector SQLAlchemy pymysql
 
 PRODUCTION-GRADE CDC PIPELINE
-Cloud SQL (MySQL) → GCS (Parquet) using Apache Beam (Dataflow)
+--> Cloud SQL (MySQL) → GCS (Parquet) using Apache Beam (Dataflow)
 
 Best Practices Implemented:
 - Cloud SQL Python Connector (IAM-based, secure)
@@ -47,20 +47,20 @@ LOGGER = logging.getLogger("cloudsql-cdc")
 # =====================================================
 # CONFIG
 # =====================================================
-PROJECT_ID = "dev-gcp-100"
-REGION = "us-east1"
+PROJECT_ID = "dev-banking-2026-499415"
+REGION = "us-central1"
 
 BQ_DATASET = "banking_metadata"
 BQ_TABLE = "cdc_config"
 
-INSTANCE_NAME = "mysql-instance"
+INSTANCE_NAME = "banking-db-mysql"
 DB_NAME = "banking_db"
 DB_USER = "myuser"
-DB_PASSWORD = "Mysql@123"  # 👉 move to Secret Manager in prod
+DB_PASSWORD = "Mypass@123"  # 👉 move to Secret Manager in prod
 
-GCS_RAW_BASE = "gs://banking-raw-dev-100/cloudsql/"
-TEMP_LOCATION = "gs://banking-temp-dev/temp/"
-STAGING_LOCATION = "gs://banking-temp-dev/staging/"
+GCS_RAW_BASE = "gs://banking-raw-dev-bkt/cloudsql/"
+TEMP_LOCATION = "gs://banking-temp-dev-bkt/temp/"
+STAGING_LOCATION = "gs://banking-temp-dev-bkt/staging/"
 
 INSTANCE_CONNECTION_NAME = f"{PROJECT_ID}:{REGION}:{INSTANCE_NAME}"
 

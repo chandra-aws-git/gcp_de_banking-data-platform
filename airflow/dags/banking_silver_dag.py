@@ -9,7 +9,7 @@ from google.cloud import storage
 # =====================================================
 # CONFIG
 # =====================================================
-PROJECT_ID = "dev-gcp-100"
+PROJECT_ID = "dev-banking-2026-499415"
 BQ_LOCATION = "US"
 
 COMPOSER_BUCKET = os.environ["GCS_BUCKET"]

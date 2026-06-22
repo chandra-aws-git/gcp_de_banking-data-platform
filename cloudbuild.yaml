@@ -61,8 +61,8 @@ steps:
 options:
   logging: CLOUD_LOGGING_ONLY
 substitutions:
-  _ENV_NAME: demo-composer-dev
+  _ENV_NAME: demo-composer
   _REGION: us-central1
-  _AIRFLOW_VERSION: 2.10.5
-  _IMAGE_VERSION: composer-3-airflow-2.10.5-build.24
-  _SERVICE_ACCOUNT: 1031875039844-compute@developer.gserviceaccount.com
+  _AIRFLOW_VERSION: 2.11.1
+  _IMAGE_VERSION: composer-3-airflow-2.11.1-build.6
+  _SERVICE_ACCOUNT: 397735037421-compute@developer.gserviceaccount.com

@@ -8,7 +8,7 @@ from google.cloud import pubsub_v1
 # =====================================================
 # CONFIG
 # =====================================================
-PROJECT_ID = "dev-banking-2026" # replace with your GCP project ID
+PROJECT_ID = "dev-banking-2026-499415" # replace with your GCP project ID
 TOPIC_ID = "banking-transactions-topic"
 
 EVENTS_PER_SECOND = 2   # control load (TPS)
