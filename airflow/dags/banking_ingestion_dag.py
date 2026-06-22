@@ -1,10 +1,10 @@
 import logging
 import os
-
 from airflow import DAG
-from datetime import timedelta
 from airflow.utils.dates import days_ago
+from datetime import timedelta
 from airflow.operators.empty import EmptyOperator
+
 from airflow.providers.apache.beam.hooks.beam import BeamRunnerType
 from airflow.providers.apache.beam.operators.beam import BeamRunPythonPipelineOperator
 
@@ -19,7 +19,9 @@ REGION = "us-central1"
 TEMP_LOCATION = "gs://banking-temp-dev-bkt/temp/"
 STAGING_LOCATION = "gs://banking-temp-dev-bkt/staging/"
 
-composer_bucket = os.environ["GCS_BUCKET"]
+composer_bucket = os.environ.get("GCS_BUCKET")
+logging.info("COMPOSER_BUCKET = %s", composer_bucket)
+
 GCS_PYTHON_SCRIPT = f"gs://{composer_bucket}/data/dataflow/cloudsql_cdc_pipeline.py"
 logging.info("GCS_PYTHON_SCRIPT = %s", GCS_PYTHON_SCRIPT)
 
@@ -32,7 +34,7 @@ DEFAULT_ARGS = {
 # =====================================================
 with DAG(
     dag_id="banking_ingestion_dag",
-    description="Cloud SQL → GCS CDC using Apache Beam on Dataflow",
+    description="Cloud SQL --> GCS CDC using Apache Beam on Dataflow",
     start_date=days_ago(1),
     schedule_interval=None,
     catchup=False,
@@ -40,6 +42,7 @@ with DAG(
     default_args=DEFAULT_ARGS,
     tags=["banking", "cdc", "dataflow"],
 ) as dag:
+
     start = EmptyOperator(task_id="start")
 
     run_dataflow = BeamRunPythonPipelineOperator(
@@ -47,7 +50,7 @@ with DAG(
         runner=BeamRunnerType.DataflowRunner,
         py_file=GCS_PYTHON_SCRIPT,
         py_interpreter="python3",
-        py_system_site_packages=True,
+        py_system_site_packages=False,
         py_options=[],
         pipeline_options={},
         py_requirements=[
