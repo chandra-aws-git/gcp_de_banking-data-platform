@@ -2,7 +2,7 @@
 Note : pip install cloud-sql-python-connector SQLAlchemy pymysql
 
 PRODUCTION-GRADE CDC PIPELINE
---> Cloud SQL (MySQL) → GCS (Parquet) using Apache Beam (Dataflow)
+--> Cloud SQL (MySQL) â†’ GCS (Parquet) using Apache Beam (Dataflow)
 
 Best Practices Implemented:
 - Cloud SQL Python Connector (IAM-based, secure)
@@ -19,15 +19,24 @@ Best Practices Implemented:
 # IMPORTS
 # =====================================================
 import apache_beam as beam
-import pyarrow as pa
-import sqlalchemy
-from apache_beam.io.parquetio import WriteToParquet
 from apache_beam.options.pipeline_options import PipelineOptions
+from apache_beam.io.parquetio import WriteToParquet
 from apache_beam.transforms.util import Reshuffle
-from google.cloud import bigquery, secretmanager
+
+from google.cloud import bigquery
 from google.cloud.sql.connector import Connector
 
+import sqlalchemy
+import pyarrow as pa
+import datetime
+from decimal import Decimal
+import logging
+import sys
+import traceback
 
+# =====================================================
+# LOGGING
+# =====================================================
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
@@ -47,7 +56,7 @@ BQ_TABLE = "cdc_config"
 INSTANCE_NAME = "banking-db-mysql"
 DB_NAME = "banking_db"
 DB_USER = "myuser"
-DB_PASSWORD = "Mypass@123"  # 👉 move to Secret Manager in prod
+DB_PASSWORD = "Mypass@123"  # ðŸ‘‰ move to Secret Manager in prod
 
 GCS_RAW_BASE = "gs://banking-raw-dev-bkt/cloudsql/"
 TEMP_LOCATION = "gs://banking-temp-dev-bkt/temp/"
@@ -78,38 +87,35 @@ def get_active_tables():
     client = bigquery.Client(project=PROJECT_ID)
     query = f"""
         SELECT table_name, watermark_column, last_success_ts
-        FROM `{project_id}.{dataset}.{table}`
+        FROM `{PROJECT_ID}.{BQ_DATASET}.{BQ_TABLE}`
         WHERE is_active = TRUE
     """
     return list(client.query(query).result())
 
 
-def update_watermark(project_id: str, dataset: str, table: str, table_name: str, ts):
-    client = bigquery.Client(project=project_id)
+def update_watermark(table_name, ts):
+    client = bigquery.Client(project=PROJECT_ID)
     query = f"""
-        UPDATE `{project_id}.{dataset}.{table}`
-        SET last_success_ts = @last_success_ts
-        WHERE table_name = @table_name
+        UPDATE `{PROJECT_ID}.{BQ_DATASET}.{BQ_TABLE}`
+        SET last_success_ts = TIMESTAMP('{ts}')
+        WHERE table_name = '{table_name}'
     """
-    job_config = bigquery.QueryJobConfig(
-        query_parameters=[
-            bigquery.ScalarQueryParameter("last_success_ts", "TIMESTAMP", ts),
-            bigquery.ScalarQueryParameter("table_name", "STRING", table_name),
-        ]
-    )
-    client.query(query, job_config=job_config).result()
+    client.query(query).result()
 
 
-def get_engine(instance_connection_name: str, db_name: str, db_user: str, db_password: str):
+# =====================================================
+# CLOUD SQL ENGINE
+# =====================================================
+def get_engine():
     connector = Connector()
 
     def getconn():
         return connector.connect(
-            instance_connection_name,
+            INSTANCE_CONNECTION_NAME,
             "pymysql",
-            user=db_user,
-            password=db_password,
-            db=db_name,
+            user=DB_USER,
+            password=DB_PASSWORD,
+            db=DB_NAME,
         )
 
     return sqlalchemy.create_engine(
@@ -122,19 +128,22 @@ def get_engine(instance_connection_name: str, db_name: str, db_user: str, db_pas
     )
 
 
-def get_mysql_schema(engine, table_name: str):
-    table_name = validate_identifier(table_name)
+# =====================================================
+# SCHEMA INFERENCE
+# =====================================================
+def get_mysql_schema(table_name):
+    engine = get_engine()
     fields = []
 
     with engine.connect() as conn:
-        result = conn.execute(sqlalchemy.text(f"DESCRIBE `{table_name}`"))
+        result = conn.execute(sqlalchemy.text(f"DESCRIBE {table_name}"))
         for row in result:
             dtype = row.Type.lower()
             if "int" in dtype:
                 pa_type = pa.int64()
             elif "decimal" in dtype:
                 pa_type = pa.string()
-            elif "float" in dtype or "double" in dtype:
+            elif "float" in dtype:
                 pa_type = pa.float64()
             elif "timestamp" in dtype or "datetime" in dtype:
                 pa_type = pa.timestamp("us")
@@ -147,119 +156,79 @@ def get_mysql_schema(engine, table_name: str):
     return pa.schema(fields)
 
 
+# =====================================================
+# NORMALIZATION
+# =====================================================
 def normalize_row(row):
-    return {key: str(value) if isinstance(value, Decimal) else value for key, value in row.items()}
+    return {k: str(v) if isinstance(v, Decimal) else v for k, v in row.items()}
 
 
+# =====================================================
+# BEAM DoFn
+# =====================================================
 class ReadFromCloudSQL(beam.DoFn):
-    def __init__(self, table, watermark_col, last_ts, engine_config):
-        self.table = validate_identifier(table)
-        self.watermark_col = validate_identifier(watermark_col)
+    def __init__(self, table, watermark_col, last_ts):
+        self.table = table
+        self.watermark_col = watermark_col
         self.last_ts = last_ts
-        self.engine_config = engine_config
 
     def setup(self):
-        db_password = get_secret(
-            self.engine_config["project_id"],
-            self.engine_config["db_password_secret"],
-        )
-        self.engine = get_engine(
-            self.engine_config["instance_connection_name"],
-            self.engine_config["db_name"],
-            self.engine_config["db_user"],
-            db_password,
-        )
+        self.engine = get_engine()
 
     def process(self, element):
-        if self.last_ts is None:
-            query = sqlalchemy.text(f"SELECT * FROM `{self.table}`")
-            params = {}
-        else:
-            query = sqlalchemy.text(
-                f"""
-                SELECT *
-                FROM `{self.table}`
-                WHERE `{self.watermark_col}` > :last_ts
-                """
-            )
-            params = {"last_ts": self.last_ts}
-
+        query = f"""
+            SELECT *
+            FROM {self.table}
+            WHERE {self.watermark_col} > :last_ts
+        """
         with self.engine.connect() as conn:
-            for row in conn.execute(query, params):
+            result = conn.execute(
+                sqlalchemy.text(query), {"last_ts": self.last_ts}
+            )
+            for row in result:
                 yield dict(row._mapping)
 
 
-def run(argv=None):
+# =====================================================
+# PIPELINE
+# =====================================================
+def run():
     LOGGER.info("Starting CDC pipeline")
-    run_ts = datetime.datetime.now(datetime.timezone.utc)
+    run_ts = datetime.datetime.utcnow()
 
-    pipeline_options = PipelineOptions(argv)
-    options = pipeline_options.view_as(CloudSqlCdcOptions)
+    tables = get_active_tables()
+    options = PipelineOptions(**DATAFLOW_OPTIONS)
 
-    engine_config = {
-        "project_id": options.project_id,
-        "instance_connection_name": options.instance_connection_name,
-        "db_name": options.db_name,
-        "db_user": options.db_user,
-        "db_password_secret": options.db_password_secret,
-    }
-    engine = get_engine(
-        options.instance_connection_name,
-        options.db_name,
-        options.db_user,
-        get_secret(options.project_id, options.db_password_secret),
-    )
+    with beam.Pipeline(options=options) as p:
+        for t in tables:
+            schema = get_mysql_schema(t.table_name)
 
-    tables = get_active_tables(
-        options.project_id,
-        options.metadata_dataset,
-        options.metadata_table,
-    )
-
-    try:
-        with beam.Pipeline(options=pipeline_options) as pipeline:
-            for table_config in tables:
-                schema = get_mysql_schema(engine, table_config.table_name)
-                table_name = validate_identifier(table_config.table_name)
-
-                (
-                    pipeline
-                    | f"Start-{table_name}" >> beam.Create([None])
-                    | f"Read-{table_name}"
-                    >> beam.ParDo(
-                        ReadFromCloudSQL(
-                            table_config.table_name,
-                            table_config.watermark_column,
-                            table_config.last_success_ts,
-                            engine_config,
-                        )
-                    )
-                    | f"Normalize-{table_name}" >> beam.Map(normalize_row)
-                    | f"Reshuffle-{table_name}" >> Reshuffle()
-                    | f"Write-{table_name}"
-                    >> WriteToParquet(
-                        file_path_prefix=(
-                            f"{options.gcs_raw_base.rstrip('/')}/{table_name}/"
-                            f"ingestion_date={run_ts:%Y-%m-%d}/part"
-                        ),
-                        schema=schema,
-                        file_name_suffix=".parquet",
+            (
+                p
+                | f"Start-{t.table_name}" >> beam.Create([None])
+                | f"Read-{t.table_name}" >> beam.ParDo(
+                    ReadFromCloudSQL(
+                        t.table_name,
+                        t.watermark_column,
+                        t.last_success_ts,
                     )
                 )
-
-        for table_config in tables:
-            update_watermark(
-                options.project_id,
-                options.metadata_dataset,
-                options.metadata_table,
-                table_config.table_name,
-                run_ts,
+                | f"Normalize-{t.table_name}" >> beam.Map(normalize_row)
+                | f"Reshuffle-{t.table_name}" >> Reshuffle()
+                | f"Write-{t.table_name}" >> WriteToParquet(
+                    file_path_prefix=(
+                        f"{GCS_RAW_BASE}{t.table_name}/"
+                        f"ingestion_date={run_ts:%Y-%m-%d}"
+                    ),
+                    schema=schema,
+                    file_name_suffix=".parquet",
+                )
             )
 
-        LOGGER.info("CDC pipeline completed successfully")
-    except Exception as exc:
-        LOGGER.error("CDC pipeline failed | %s\n%s", exc, traceback.format_exc())
-        raise
+    for t in tables:
+        update_watermark(t.table_name, run_ts)
+
+    LOGGER.info("CDC pipeline completed successfully")
 
 
 if __name__ == "__main__":
