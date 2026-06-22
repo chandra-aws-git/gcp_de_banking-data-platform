@@ -51,7 +51,7 @@ def run_sql_file(bucket_name: str, object_name: str, layer: str) -> None:
 with DAG(
     dag_id="banking_gold_dag",
     description="Silver to Gold transformations using BigQuery SQL",
-    start_date=datetime(2026, 1, 1, tz="UTC"),
+    start_date=None,
     schedule=None,
     catchup=False,
     max_active_runs=1,
