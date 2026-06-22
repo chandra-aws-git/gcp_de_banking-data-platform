@@ -2,6 +2,8 @@ import logging
 import os
 
 from airflow import DAG
+from datetime import timedelta
+from airflow.utils.dates import days_ago
 from airflow.operators.empty import EmptyOperator
 from airflow.providers.apache.beam.hooks.beam import BeamRunnerType
 from airflow.providers.apache.beam.operators.beam import BeamRunPythonPipelineOperator

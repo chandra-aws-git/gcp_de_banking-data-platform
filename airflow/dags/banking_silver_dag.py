@@ -1,6 +1,6 @@
 import os
-
 from airflow import DAG
+from airflow.utils.dates import days_ago
 from airflow.decorators import task
 from airflow.providers.google.cloud.operators.bigquery import BigQueryInsertJobOperator
 from datetime import timedelta
@@ -13,60 +13,79 @@ PROJECT_ID = "dev-banking-2026-499415"
 BQ_LOCATION = "US"
 
 COMPOSER_BUCKET = os.environ["GCS_BUCKET"]
-SILVER_SQL_PREFIX = "data/bigquery/silver"
+silver_SQL_PATH = f"gs://{COMPOSER_BUCKET}/data/bigquery/silver"
 
+DEFAULT_ARGS = {
+    "owner": "data-engineering"
+}
 
-def list_sql_files(bucket_name: str, prefix: str) -> list[dict[str, str]]:
-    gcs = GCSHook()
-    objects = gcs.list(bucket_name=bucket_name, prefix=prefix)
-    sql_files = [
-        {"file": object_name.rsplit("/", 1)[-1], "object_name": object_name}
-        for object_name in objects
-        if object_name.endswith(".sql")
-    ]
-    return sorted(sql_files, key=lambda item: item["file"])
+# =====================================================
+# HELPERS
+# =====================================================
+def read_sql_from_gcs(gcs_uri: str) -> str:
+    client = storage.Client()
+    bucket, blob_path = gcs_uri.replace("gs://", "").split("/", 1)
+    return client.bucket(bucket).blob(blob_path).download_as_text()
 
-
-def run_sql_file(bucket_name: str, object_name: str, layer: str) -> None:
-    gcs = GCSHook()
-    bq = BigQueryHook(use_legacy_sql=False, location=BQ_LOCATION)
-    sql = gcs.download(bucket_name=bucket_name, object_name=object_name).decode("utf-8")
-    bq.insert_job(
-        configuration={
-            "query": {
-                "query": sql,
-                "useLegacySql": False,
-            },
-            "labels": {
-                "layer": layer,
-                "domain": "banking",
-                "env": ENV,
-            },
-        },
-        project_id=PROJECT_ID,
-        location=BQ_LOCATION,
-    )
-
-
+# =====================================================
+# DAG
+# =====================================================
 with DAG(
     dag_id="banking_silver_dag",
-    description="Bronze to Silver transformations using BigQuery SQL",
-    start_date=datetime(2026, 1, 1, tz="UTC"),
-    schedule=None,
+    description="Silver → silver (Business KPIs & Analytics) using BigQuery SQL",
+    start_date=days_ago(1),
+    schedule_interval=None,          # triggered after Silver
     catchup=False,
     max_active_runs=1,
     default_args=DEFAULT_ARGS,
     tags=["banking", "silver", "bigquery", "analytics"],
 ) as dag:
+
+    # -------------------------------------------------
+    # 1. DISCOVER silver SQL FILES
+    # -------------------------------------------------
     @task
-    def discover_sql_files() -> list[dict[str, str]]:
-        sql_files = list_sql_files(COMPOSER_BUCKET, SILVER_SQL_PREFIX)
+    def discover_sql_files():
+        client = storage.Client()
+        bucket_name, prefix = silver_SQL_PATH.replace("gs://", "").split("/", 1)
+
+        blobs = client.list_blobs(bucket_name, prefix=prefix)
+
+        sql_files = []
+        for blob in blobs:
+            if blob.name.endswith(".sql"):
+                sql_files.append({
+                    "file": blob.name.split("/")[-1],
+                    "gcs_path": f"gs://{bucket_name}/{blob.name}",
+                })
+
         if not sql_files:
             raise ValueError("No SQL files found for silver layer")
+
         return sql_files
 
-    @task
-    def execute_sql(sql_file: dict[str, str]) -> None:
-        run_sql_file(COMPOSER_BUCKET, sql_file["object_name"], "silver")
+    sql_files = discover_sql_files()
 
-    execute_sql.expand(sql_file=discover_sql_files())
+    # -------------------------------------------------
+    # 2. EXECUTE silver SQL (PARALLEL – SAFE)
+    # -------------------------------------------------
+    run_silver_sql = BigQueryInsertJobOperator.partial(
+        task_id="run_silver_sql",
+        location=BQ_LOCATION,
+    ).expand(
+        configuration=sql_files.map(
+            lambda s: {
+                "query": {
+                    "query": read_sql_from_gcs(s["gcs_path"]),
+                    "useLegacySql": False,
+                },
+                "labels": {
+                    "layer": "silver",
+                    "domain": "banking",
+                    "env": "dev",
+                },
+            }
+        )
+    )
+
+    sql_files >> run_silver_sql
