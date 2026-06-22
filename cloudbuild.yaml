@@ -24,7 +24,6 @@ steps:
         set -e
 
         # Note: We use $$ for bash variables to avoid Cloud Build substitution
-        errors
 
         FULL_PATH=$(gcloud composer environments describe ${_ENV_NAME} \
           --location ${_REGION} \

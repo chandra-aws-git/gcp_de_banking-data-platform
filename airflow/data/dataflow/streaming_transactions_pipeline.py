@@ -1,8 +1,11 @@
 import json
 import logging
 from datetime import datetime, timezone
+from datetime import datetime, timezone
 
 import apache_beam as beam
+from apache_beam.io.gcp.bigquery import WriteToBigQuery
+from apache_beam.io.gcp.pubsub import ReadFromPubSub, WriteToPubSub
 from apache_beam.options.pipeline_options import PipelineOptions
 from apache_beam.transforms.window import FixedWindows
 from apache_beam.io.gcp.pubsub import ReadFromPubSub
