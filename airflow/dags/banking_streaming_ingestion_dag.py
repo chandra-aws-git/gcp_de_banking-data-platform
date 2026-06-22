@@ -39,8 +39,8 @@ DEADLETTER_TOPIC = get_setting(
 with DAG(
     dag_id="banking_streaming_ingestion_dag",
     description="Start Dataflow streaming pipeline for banking transactions",
-    start_date=datetime(2026, 1, 1, tz="UTC"),
-    schedule="@once",
+    start_date=None,
+    schedule=None,
     catchup=False,
     max_active_runs=1,
     default_args=DEFAULT_ARGS,
