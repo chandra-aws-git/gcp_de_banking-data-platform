@@ -3,6 +3,7 @@
 End-to-end teaching project for data engineers that demonstrates a banking data platform on Google Cloud using Cloud Composer, Dataflow, Dataproc, Pub/Sub, Cloud SQL, GCS, and BigQuery.
 
 ## Architecture
+<img width="1536" height="1024" alt="image" src="https://github.com/user-attachments/assets/3208fc35-c175-4495-bcb2-bf5d8b82c860" />
 
 - Cloud SQL stores operational banking entities.
 - Dataflow extracts CDC-style batches from Cloud SQL into GCS as parquet.
